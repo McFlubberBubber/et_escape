@@ -245,8 +245,8 @@ static void init_game(Game_State *gs) {
 	gs->is_over = false;
 	gs->draw_hitboxes = false;
 
-	array_init(&entities, 64);
-	array_init(&emitters, 64);
+	array_init(&entities);
+	array_init(&emitters);
 }
 
 static void reset_game(Game_State *gs) { // This is called even for startup.
@@ -319,8 +319,8 @@ static void handle_menu_inputs() {
 	}
 }
 
-const u32  player_movement_speed = 8;
-const u32 invader_movement_speed = 4;
+const u32  player_movement_speed = 600;
+const u32 invader_movement_speed = 200;
 const u32  pickup_movement_speed = 3;
 
 static void handle_game_inputs() {
@@ -333,10 +333,29 @@ static void handle_game_inputs() {
 
 		if (the_game.is_over) return;
 		Entity *player = get_entity(player_handle);
+		#if 0
 		if (IsKeyDown(KEY_A))  player->pos.x -= player_movement_speed;
 		if (IsKeyDown(KEY_D))  player->pos.x += player_movement_speed;
 		if (IsKeyDown(KEY_W))  player->pos.y -= player_movement_speed;
 		if (IsKeyDown(KEY_S))  player->pos.y += player_movement_speed;
+		#else
+		Vector2 dir = {};
+
+		if (IsKeyDown(KEY_A))  dir.x -= 1.0f;
+		if (IsKeyDown(KEY_D))  dir.x += 1.0f;
+		if (IsKeyDown(KEY_W))  dir.y -= 1.0f;
+		if (IsKeyDown(KEY_S))  dir.y += 1.0f;
+
+		if (dir.x != 0 || dir.y != 0) {
+			float len = sqrtf(dir.x * dir.x + dir.y * dir.y);
+			dir.x /= len;
+			dir.y /= len;
+		}
+		player->vel.x = dir.x * player_movement_speed;
+		player->vel.y = dir.y * player_movement_speed;
+		
+
+		#endif
 
 		if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_UP))  fire_player_missile();
 	}
@@ -360,8 +379,8 @@ static void process_input() {
 	}
 }
 
-const u32 player_missile_speed = 10;
-const u32 invader_missile_speed = 6;
+const float player_missile_speed = 700;
+const float invader_missile_speed = 300;
 const u32 missile_lifetime = 1;
 
 const u32 powerup_duration = 10; // 10 seconds.
@@ -388,6 +407,9 @@ static void update_app() {
 			Entity_Handle handle = {entity_index, it->gen};
 			switch (it->type) {
 			case ENTITY_PLAYER: {
+				it->pos.x += it->vel.x * dt;
+				it->pos.y += it->vel.y * dt;
+				
 				const float player_left   = it->pos.x;
 				const float player_right  = it->pos.x + player_width;
 				const float player_top    = it->pos.y + player_height;
@@ -411,17 +433,19 @@ static void update_app() {
 					it->current_pickup = PICKUP_UNINITIALIZED;
 					it->duration = 0;
 				}
-				
 			} break;
 
 			case ENTITY_INVADER: {
+				it->pos.x += it->vel.x * dt;
+				it->pos.y += it->vel.y * dt;
+
 				const float invader_bottom = it->pos.y + invader_height;
 				const float invader_top = it->pos.y;
+
 				if (invader_top > window_height) {
 					destroy_entity(handle);
 					the_game.current_invader_count -= 1;
 				}
-				it->pos.y += invader_movement_speed;
 
 				// Every few seconds, fire_invader_missile() based on RNG.
 				it->duration -= dt;
@@ -434,17 +458,20 @@ static void update_app() {
 			} break;
 
 			case ENTITY_PICKUP: {
+				// @TODO: Should we use it's velocity instead?
+				it->pos.y += pickup_movement_speed;
+
 				const float pickup_bottom = it->pos.y + pickup_height;
 				const float pickup_top = it->pos.y;
 				if (pickup_top > window_height) {
 					destroy_entity(handle);
 				}
-				it->pos.y += pickup_movement_speed;
 			} break;
 
 			case ENTITY_PLAYER_MISSILE: {
 				it->duration += dt;
-				it->pos.y -= player_missile_speed;
+				it->pos.x += it->vel.x * dt;
+				it->pos.y += it->vel.y * dt;
 
 				Particle_Emitter *e = NULL;
 				if (it->trail_emitter_index >= 0) {
@@ -460,7 +487,9 @@ static void update_app() {
 			} break;
 			
 			case ENTITY_INVADER_MISSILE: {
-				it->pos.y += invader_missile_speed;
+				it->pos.x += it->vel.x * dt;
+				it->pos.y += it->vel.y * dt;
+				
 				const float missile_top = it->pos.y;
 				if (missile_top > window_height) {
 					destroy_entity(handle);
@@ -893,13 +922,20 @@ static void fire_player_missile() {
 	SetSoundPitch(sound_player_shoot, pitch);
 	PlaySound(sound_player_shoot);
 
+	float horizontal = 0;
 	Entity *player = get_entity(player_handle);
+	if (player->vel.x < 0) {
+		horizontal = -100;
+	} else if (player->vel.x > 0){
+		horizontal =  100;
+	}
+
 	if (player->current_pickup == PICKUP_DOUBLE_SHOT) {
 		const u32 missile_margin = 5;
 
 		Entity missile1 = {};
 		missile1.pos = {player->pos.x + missile_margin, player->pos.y};
-		missile1.vel = {};
+		missile1.vel = {horizontal, -player_missile_speed};
 		missile1.map = &texture_missile;
 		missile1.type = ENTITY_PLAYER_MISSILE;
 		missile1.is_dead = false;
@@ -918,7 +954,7 @@ static void fire_player_missile() {
 	} else {
 		Entity missile = {};
 		missile.pos = {player->pos.x + (player_width*.5f), player->pos.y};
-		missile.vel = {};
+		missile.vel = {horizontal, -player_missile_speed};
 		missile.map = &texture_missile;
 		missile.type = ENTITY_PLAYER_MISSILE;
 		missile.is_dead = false;
@@ -933,7 +969,7 @@ static void fire_player_missile() {
 static void fire_invader_missile(Vector2 pos) {
 	Entity missile = {};
 	missile.pos = pos;
-	missile.vel = {};
+	missile.vel = {0, invader_missile_speed};
 	missile.map = &texture_missile;
 	missile.type = ENTITY_INVADER_MISSILE;
 	missile.is_dead = false;
@@ -957,7 +993,7 @@ static void spawn_invaders() {
 		Entity invader = {};
 		invader.pos.x = GetRandomValue(left_threshold, right_threshold);
 		invader.pos.y = GetRandomValue(invader_y_max, invader_y_min);
-		invader.vel = {};
+		invader.vel = {0, invader_movement_speed};
 		invader.map = &texture_enemy_ship;
 		invader.type = ENTITY_INVADER;
 		invader.is_dead = false;
