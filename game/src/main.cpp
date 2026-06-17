@@ -119,7 +119,7 @@ static void fire_player_missile();
 static void fire_invader_missile(Vector2 pos);
 static void spawn_random_pickup(Vector2 pos);
 
-static Particle_Emitter make_exploding_emitter(Vector2 pos);
+static Particle_Emitter make_exploding_emitter(Vector2 pos, Color color_start, Color color_end);
 static Particle_Emitter make_trailing_emitter(Vector2 pos);
 
 static void emitter_explode(Particle_Emitter *emitter, s32 burst_count);
@@ -168,11 +168,11 @@ int main() {
 	the_font = load_font("Consolas-Regular.ttf");
 
 	InitAudioDevice();
-	sound_player_shoot   = load_sound("player_shoot.wav");
-	sound_player_dies    = load_sound("player_dies.wav");
-	sound_enemy_dies     = load_sound("enemy_dies.wav");
-	sound_pickup_coin    = load_sound("pickup_coin.wav");
-	sound_pickup_power   = load_sound("pickup_power.wav");
+	sound_player_shoot = load_sound("player_shoot.wav");
+	sound_player_dies  = load_sound("player_dies.wav");
+	sound_enemy_dies   = load_sound("enemy_dies.wav");
+	sound_pickup_coin  = load_sound("pickup_coin.wav");
+	sound_pickup_power = load_sound("pickup_power.wav");
 
 	SetSoundVolume(sound_enemy_dies, 0.5f);
 	SetSoundVolume(sound_player_dies, 0.4f);
@@ -236,6 +236,9 @@ static Texture2D load_texture(const char *filename) {
 }
 
 static void init_game(Game_State *gs) {
+	const u32 initial_entities = 64;
+	const u32 initial_emitters = 64;
+
 	gs->current_level = 0;
 	gs->current_score = 0;
 	gs->current_mode = PROGRAM_MENU;
@@ -245,8 +248,8 @@ static void init_game(Game_State *gs) {
 	gs->is_over = false;
 	gs->draw_hitboxes = false;
 
-	array_init(&entities);
-	array_init(&emitters);
+	array_init(&entities, initial_entities);
+	array_init(&emitters, initial_emitters);
 }
 
 static void reset_game(Game_State *gs) { // This is called even for startup.
@@ -286,12 +289,8 @@ static void handle_menu_inputs() {
 	total_items  = static_cast<s32>(MENU_ITEM_COUNT);
 	prev_item = (current_item - 1 + total_items) % total_items;
 
-	if (IsKeyPressed(KEY_UP)) {
-		the_game.current_menu_item = static_cast<Menu_Item>((current_item + 1) % total_items);
-	}
-	if (IsKeyPressed(KEY_DOWN)) {
-		the_game.current_menu_item = static_cast<Menu_Item>(prev_item);
-	}
+	if (IsKeyPressed(KEY_UP))   the_game.current_menu_item = static_cast<Menu_Item>((current_item + 1) % total_items);
+	if (IsKeyPressed(KEY_DOWN)) the_game.current_menu_item = static_cast<Menu_Item>(prev_item);
 
 	if (IsKeyPressed(KEY_ENTER)) {
 		switch(the_game.current_menu_item) {
@@ -319,9 +318,12 @@ static void handle_menu_inputs() {
 	}
 }
 
-const u32  player_movement_speed = 600;
-const u32 invader_movement_speed = 200;
-const u32  pickup_movement_speed = 3;
+const float player_movement_speed = 600;
+
+const float pickup_movement_speed = 200;
+
+const float invader_movement_speed_min = 150;
+const float invader_movement_speed_max = 250;
 
 static void handle_game_inputs() {
 	if (IsKeyPressed(KEY_ESCAPE))  the_game.is_paused = !the_game.is_paused;
@@ -333,12 +335,6 @@ static void handle_game_inputs() {
 
 		if (the_game.is_over) return;
 		Entity *player = get_entity(player_handle);
-		#if 0
-		if (IsKeyDown(KEY_A))  player->pos.x -= player_movement_speed;
-		if (IsKeyDown(KEY_D))  player->pos.x += player_movement_speed;
-		if (IsKeyDown(KEY_W))  player->pos.y -= player_movement_speed;
-		if (IsKeyDown(KEY_S))  player->pos.y += player_movement_speed;
-		#else
 		Vector2 dir = {};
 
 		if (IsKeyDown(KEY_A))  dir.x -= 1.0f;
@@ -353,9 +349,6 @@ static void handle_game_inputs() {
 		}
 		player->vel.x = dir.x * player_movement_speed;
 		player->vel.y = dir.y * player_movement_speed;
-		
-
-		#endif
 
 		if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_UP))  fire_player_missile();
 	}
@@ -388,6 +381,7 @@ const s32 pickup_chance = 33;    // Measured in % chance;
 const float chance_to_fire_invader_missile = 30;
 
 const s32 explode_burst_count = 32;
+const s32  shield_burst_count = 8;
 
 static void update_app() {
 	if (app_should_close) return;
@@ -458,8 +452,8 @@ static void update_app() {
 			} break;
 
 			case ENTITY_PICKUP: {
-				// @TODO: Should we use it's velocity instead?
-				it->pos.y += pickup_movement_speed;
+				it->pos.y += it->vel.y * dt;
+				// it->pos.y += pickup_movement_speed;
 
 				const float pickup_bottom = it->pos.y + pickup_height;
 				const float pickup_top = it->pos.y;
@@ -513,12 +507,27 @@ static void update_app() {
 				Rectangle enemy_rect = {enemy->pos.x, enemy->pos.y, invader_width, invader_height};
 
 				if (CheckCollisionRecs(missile_rect, enemy_rect)) {
+					if (enemy->current_pickup == PICKUP_SHIELD) {
+						enemy->current_pickup = PICKUP_UNINITIALIZED;
+
+						const Vector2 emitter_pos = { enemy->pos.x + invader_width*.5f, enemy->pos.y + invader_height*.5f };
+						Particle_Emitter shield_explode = make_exploding_emitter(emitter_pos, BLUE, {0, 0, 255, 0});
+						emitter_explode(&shield_explode, shield_burst_count);
+						add_emitter(shield_explode);
+
+						// @TODO: Writing this code is easy to forget. Can we make this better?
+						Particle_Emitter *trail = array_get_at_index(&emitters, missile->trail_emitter_index);
+						trail->is_dead = true;
+						destroy_entity({i, missile->gen});
+						PlaySound(sound_pickup_power);
+						break;
+					} 
 					if (GetRandomValue(0, 100) < pickup_chance) {
 						spawn_random_pickup({enemy->pos.x + (invader_width*.5f), enemy->pos.y + (invader_height*.5f)});
 					}
 
 					const Vector2 emitter_pos = { enemy->pos.x + invader_width*.5f, enemy->pos.y + invader_height*.5f };
-					Particle_Emitter explode = make_exploding_emitter(emitter_pos);
+					Particle_Emitter explode = make_exploding_emitter(emitter_pos, ORANGE, {ORANGE.r, ORANGE.g, ORANGE.b, 0});
 					emitter_explode(&explode, explode_burst_count);
 					add_emitter(explode);
 
@@ -584,7 +593,7 @@ static void update_app() {
 				if (CheckCollisionRecs(player_rect, enemy_rect)) {
 					if (player->current_pickup == PICKUP_SHIELD) {
 						const Vector2 emitter_pos = { enemy->pos.x + invader_width*.5f, enemy->pos.y + invader_height*.5f };
-						Particle_Emitter explode = make_exploding_emitter(emitter_pos);
+						Particle_Emitter explode = make_exploding_emitter(emitter_pos, ORANGE, {});
 						emitter_explode(&explode, explode_burst_count);
 						add_emitter(explode);
 
@@ -733,16 +742,12 @@ static void draw_game() {
 			Rectangle source = {0.0f, 0.0f, (float)it->map->width, (float)it->map->height};
 			Rectangle dest = {it->pos.x, it->pos.y, player_width, player_height};
 			DrawTexturePro(*it->map, source, dest, origin, rotation, WHITE);
-			if (the_game.draw_hitboxes) {
-				DrawRectangleLinesEx(dest, hitbox_line_thickness, PINK);
-			}
 
 			const Vector2 player_center = {it->pos.x + (player_width*.5f), it->pos.y+ (player_height*.5f)};
-			
-			Color circle_color;
 			const float circle_radius = player_width * 0.7f;
-
+			Color circle_color;
 			u8 opacity; // Ranges from 0-255.
+
 			if (it->duration > 3) opacity = 100;
 			else                  opacity = 50;
 
@@ -759,12 +764,24 @@ static void draw_game() {
 				} break;
 				}
 			}
+
+			if (the_game.draw_hitboxes) {
+				DrawRectangleLinesEx(dest, hitbox_line_thickness, PINK);
+			}
 		} break;
 
 		case ENTITY_INVADER: {
 			Rectangle source = {0.0f, 0.0f, (float)it->map->width, (float)it->map->height};
 			Rectangle dest = {it->pos.x, it->pos.y, invader_width, invader_height};
 			DrawTexturePro(*it->map, source, dest, origin, rotation, WHITE);
+
+			if (it->current_pickup == PICKUP_SHIELD) {
+				const Vector2 invader_center = {it->pos.x + (invader_width*.5f), it->pos.y + (invader_height*.5f)};
+				const float circle_radius = invader_width * 0.55f;
+				const Color circle_color  = {0, 0, 255, 100};
+				DrawCircleV(invader_center, circle_radius, circle_color);
+			}
+
 			if (the_game.draw_hitboxes) {
 				DrawRectangleLinesEx(dest, hitbox_line_thickness, PINK);
 			}
@@ -918,10 +935,7 @@ static Entity *get_entity(Entity_Handle handle) {
 }
 
 static void fire_player_missile() {
-	float pitch = (float)(GetRandomValue(60, 130) / 100.0f);
-	SetSoundPitch(sound_player_shoot, pitch);
-	PlaySound(sound_player_shoot);
-
+	float pitch;
 	float horizontal = 0;
 	Entity *player = get_entity(player_handle);
 	if (player->vel.x < 0) {
@@ -950,6 +964,12 @@ static void fire_player_missile() {
 
 		add_entity(missile1);
 		add_entity(missile2);
+		
+		for (s32 i = 0; i < 2; ++i) {
+			pitch = (float)(GetRandomValue(60, 130) / 100.0f);
+			SetSoundPitch(sound_player_shoot, pitch);
+			PlaySound(sound_player_shoot);
+		}
 
 	} else {
 		Entity missile = {};
@@ -963,6 +983,10 @@ static void fire_player_missile() {
 		missile.trail_emitter_index = add_emitter(trail);
 
 		add_entity(missile);
+
+		pitch = (float)(GetRandomValue(60, 130) / 100.0f);
+		SetSoundPitch(sound_player_shoot, pitch);
+		PlaySound(sound_player_shoot);
 	}
 }
 
@@ -989,14 +1013,25 @@ static void spawn_invaders() {
 	const float left_threshold = 0; 
 	const float right_threshold = window_width - invader_width;
 
+	s32 chance_to_spawn_with_shield = 0;
+	if (the_game.current_level > 2) {
+		chance_to_spawn_with_shield = 25;
+	}
+
 	for (s32 i = 0; i < invaders_to_spawn; ++i) {
 		Entity invader = {};
 		invader.pos.x = GetRandomValue(left_threshold, right_threshold);
 		invader.pos.y = GetRandomValue(invader_y_max, invader_y_min);
-		invader.vel = {0, invader_movement_speed};
+		invader.vel = {0, (float)GetRandomValue(invader_movement_speed_min, invader_movement_speed_max)};
 		invader.map = &texture_enemy_ship;
 		invader.type = ENTITY_INVADER;
 		invader.is_dead = false;
+
+		if (GetRandomValue(0, 100) < chance_to_spawn_with_shield) {
+			invader.current_pickup = PICKUP_SHIELD;
+		} else {
+			invader.current_pickup = PICKUP_UNINITIALIZED;
+		}
 		
 		// This is used for the invader's fire cooldowns.
 		invader.duration = GetRandomValue(1000, 3000) / 1000.0f; // 1-3 seconds.
@@ -1008,7 +1043,7 @@ static void spawn_invaders() {
 static void spawn_random_pickup(Vector2 pos) {
 	Entity e = {};
 	e.pos = pos;
-	e.vel = {};
+	e.vel = {0, pickup_movement_speed};
 	e.is_dead = false;
 
 	e.type = ENTITY_PICKUP;
@@ -1133,7 +1168,7 @@ void draw_texture_tiled(Texture2D texture, Rectangle source, Rectangle dest, Vec
     }
 }
 
-static Particle_Emitter make_exploding_emitter(Vector2 pos) {
+static Particle_Emitter make_exploding_emitter(Vector2 pos, Color color_start, Color color_end = {0, 0, 0, 0}) {
 	Particle_Emitter emitter = {};
 	emitter.pos = pos;
 	emitter.dir = {};
@@ -1141,8 +1176,8 @@ static Particle_Emitter make_exploding_emitter(Vector2 pos) {
 	emitter.min_lifetime = 0.5f;
 	emitter.max_lifetime = 1.0f;
 
-	emitter.color_start = ORANGE;
-	emitter.color_end   = {25, 25, 25, 0};
+	emitter.color_start = color_start;
+	emitter.color_end   = color_end;
 
 	emitter.type = EMITTER_EXPLODE;
 	emitter.is_dead = false;
