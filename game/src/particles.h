@@ -7,8 +7,12 @@
 const u32 MAX_PARTICLES_PER_EMITTER = 128;
 
 enum Emitter_Type : u8 {
-	EMITTER_EXPLODE,    // On death particle explosion.  
-	EMITTER_TRAIL		// Trail left behind missiles.
+	EMITTER_NONE,
+	
+	EMITTER_EXPLODE,
+
+	EMITTER_PLAYER_MISSILE_TRAIL,
+	EMITTER_INVADER_MISSILE_TRAIL
 };
 
 struct Particle {
@@ -19,6 +23,8 @@ struct Particle {
 
 	float elapsed;	// Time since spawn.
 	float lifetime; // Total lifespan.
+
+	float size;
 
 	bool is_active;
 };
@@ -31,6 +37,9 @@ struct Particle_Emitter {
 
 	float min_lifetime;
 	float max_lifetime;
+
+	float min_size = 0;
+	float max_size;
 
 	Color color_start;
 	Color color_end;

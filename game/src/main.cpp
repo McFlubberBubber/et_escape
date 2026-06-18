@@ -120,14 +120,14 @@ static void fire_invader_missile(Vector2 pos);
 static void spawn_random_pickup(Vector2 pos);
 
 static Particle_Emitter make_exploding_emitter(Vector2 pos, Color color_start, Color color_end);
-static Particle_Emitter make_trailing_emitter(Vector2 pos);
+static Particle_Emitter make_trailing_emitter_for_missile(Vector2 pos, Entity_Type type);
 
 static void emitter_explode(Particle_Emitter *emitter, s32 burst_count);
 
 static s32  add_emitter(Particle_Emitter emitter);
 static void spawn_explode_particle(Particle_Emitter *emitter);
 static void spawn_trail_particle(Particle_Emitter *emitter);
-static void update_emitters();
+static void update_each_emitters_particles();
 static void draw_emitters();
 
 int main() {
@@ -384,9 +384,9 @@ const s32 explode_burst_count = 32;
 const s32  shield_burst_count = 8;
 
 static void update_app() {
-	if (app_should_close) return;
+	if (app_should_close)   return;
 	if (the_game.is_paused) return;
-	if (the_game.is_over) return;
+	if (the_game.is_over)   return;
 
 	if (the_game.current_mode == PROGRAM_GAME) {
 		check_level_changes(); // This function is a MESS.
@@ -445,7 +445,9 @@ static void update_app() {
 				it->duration -= dt;
 				if (it->duration <= 0) {
 					if (GetRandomValue(0, 100) < chance_to_fire_invader_missile) {
-						fire_invader_missile({it->pos.x + (invader_width*.5f), it->pos.y + invader_height});
+						const float center_width = it->pos.x + invader_width*.5f;
+						const float bottom = it->pos.y + invader_height;
+						fire_invader_missile({center_width - invader_missile_width*.5f, invader_bottom});
 					}
 					it->duration = GetRandomValue(1000, 3000) / 1000.0f;
 				}
@@ -453,7 +455,6 @@ static void update_app() {
 
 			case ENTITY_PICKUP: {
 				it->pos.y += it->vel.y * dt;
-				// it->pos.y += pickup_movement_speed;
 
 				const float pickup_bottom = it->pos.y + pickup_height;
 				const float pickup_top = it->pos.y;
@@ -467,11 +468,9 @@ static void update_app() {
 				it->pos.x += it->vel.x * dt;
 				it->pos.y += it->vel.y * dt;
 
-				Particle_Emitter *e = NULL;
-				if (it->trail_emitter_index >= 0) {
-					e = array_get_at_index(&emitters, it->trail_emitter_index);
-				}
-				e->pos = it->pos;
+				Particle_Emitter *e = array_get_at_index(&emitters, it->trail_emitter_index);
+				e->pos.x = it->pos.x + player_missile_width*.5f;
+				e->pos.y = it->pos.y;
 
 				const float missile_bottom = it->pos.y + player_missile_height;
 				if (it->duration >= missile_lifetime || missile_bottom < 0) {
@@ -484,8 +483,13 @@ static void update_app() {
 				it->pos.x += it->vel.x * dt;
 				it->pos.y += it->vel.y * dt;
 				
+				Particle_Emitter *e = array_get_at_index(&emitters, it->trail_emitter_index);
+				e->pos.x = it->pos.x + invader_missile_width*.5f;
+				e->pos.y = it->pos.y + invader_missile_height;
+
 				const float missile_top = it->pos.y;
 				if (missile_top > window_height) {
+					e->is_dead = true;
 					destroy_entity(handle);
 				}
 			} break;
@@ -620,13 +624,15 @@ static void update_app() {
 				Rectangle missile_rect = {missile->pos.x, missile->pos.y, invader_missile_width, invader_missile_height * .1f};
 
 				if (CheckCollisionRecs(player_rect, missile_rect)) {
+					Particle_Emitter *e = array_get_at_index(&emitters, missile->trail_emitter_index);
+					e->is_dead = true;
+					destroy_entity({m, missile->gen});
+					
 					if (player->current_pickup == PICKUP_SHIELD) {
-						destroy_entity({m, missile->gen});
 						PlaySound(sound_pickup_power); // @Temp.
 						player->current_pickup = PICKUP_UNINITIALIZED;
 						player->duration = 0;
 					} else {
-						destroy_entity({m, missile->gen});
 						destroy_entity(player_handle);
 						PlaySound(sound_player_dies);
 						the_game.is_over = true;
@@ -635,7 +641,10 @@ static void update_app() {
 			}
 		}
 
-		update_emitters();
+		// This specifically updates only the particles and not the emitters
+		// themselves. Trailing emitter positions are updated within the above
+		// procedure.
+		update_each_emitters_particles();
 	}
 }
 
@@ -957,8 +966,8 @@ static void fire_player_missile() {
 		Entity missile2 = missile1;
 		missile2.pos.x = player->pos.x + player_width - missile_margin;
 		
-		Particle_Emitter trail1 = make_trailing_emitter(missile1.pos);
-		Particle_Emitter trail2 = make_trailing_emitter(missile2.pos);
+		Particle_Emitter trail1 = make_trailing_emitter_for_missile(missile1.pos, ENTITY_PLAYER_MISSILE);
+		Particle_Emitter trail2 = make_trailing_emitter_for_missile(missile2.pos, ENTITY_PLAYER_MISSILE);
 		missile1.trail_emitter_index = add_emitter(trail1);
 		missile2.trail_emitter_index = add_emitter(trail2);
 
@@ -979,7 +988,7 @@ static void fire_player_missile() {
 		missile.type = ENTITY_PLAYER_MISSILE;
 		missile.is_dead = false;
 	
-		Particle_Emitter trail = make_trailing_emitter(missile.pos);
+		Particle_Emitter trail = make_trailing_emitter_for_missile(missile.pos, ENTITY_PLAYER_MISSILE);
 		missile.trail_emitter_index = add_emitter(trail);
 
 		add_entity(missile);
@@ -997,6 +1006,9 @@ static void fire_invader_missile(Vector2 pos) {
 	missile.map = &texture_missile;
 	missile.type = ENTITY_INVADER_MISSILE;
 	missile.is_dead = false;
+
+	Particle_Emitter trail = make_trailing_emitter_for_missile(missile.pos, ENTITY_INVADER_MISSILE);
+	missile.trail_emitter_index = add_emitter(trail);
 
 	add_entity(missile);
 }
@@ -1168,6 +1180,9 @@ void draw_texture_tiled(Texture2D texture, Rectangle source, Rectangle dest, Vec
     }
 }
 
+const float explode_particle_radius_min = 4.0f;
+const float explode_particle_radius_max = 6.0f;
+
 static Particle_Emitter make_exploding_emitter(Vector2 pos, Color color_start, Color color_end = {0, 0, 0, 0}) {
 	Particle_Emitter emitter = {};
 	emitter.pos = pos;
@@ -1175,6 +1190,9 @@ static Particle_Emitter make_exploding_emitter(Vector2 pos, Color color_start, C
 
 	emitter.min_lifetime = 0.5f;
 	emitter.max_lifetime = 1.0f;
+
+	emitter.min_size = explode_particle_radius_min;
+	emitter.max_size = explode_particle_radius_max;
 
 	emitter.color_start = color_start;
 	emitter.color_end   = color_end;
@@ -1185,18 +1203,31 @@ static Particle_Emitter make_exploding_emitter(Vector2 pos, Color color_start, C
 	return emitter;
 }
 
-static Particle_Emitter make_trailing_emitter(Vector2 pos) {
+const float trail_particle_radius_min = 2.0f;
+const float trail_particle_radius_max = 3.0f;
+
+static Particle_Emitter make_trailing_emitter_for_missile(Vector2 pos, Entity_Type type = ENTITY_UNINITIALIZED) {
 	Particle_Emitter emitter = {};
+	if (type == ENTITY_UNINITIALIZED) return emitter;
+
+	if (type == ENTITY_PLAYER_MISSILE) {
+		emitter.type = EMITTER_PLAYER_MISSILE_TRAIL;
+		emitter.color_start = {102, 244, 255, 255};
+	} else if (type == ENTITY_INVADER_MISSILE) {
+		emitter.type = EMITTER_INVADER_MISSILE_TRAIL;
+		emitter.color_start = RED;
+	} 
+	emitter.color_end = {25, 25, 25, 0};
+	
 	emitter.pos = pos;
-	emitter.dir = {0, 1}; // @Hardcode: we only draw the player's missiles now.
+	emitter.dir = {0, 1};
 
 	emitter.min_lifetime = 0.1f;
 	emitter.max_lifetime = 0.3f;
 
-	emitter.color_start = {102, 244, 255, 255};
-	emitter.color_end   = {25, 25, 25, 0};
+	emitter.min_size = trail_particle_radius_min;
+	emitter.max_size = trail_particle_radius_max;
 
-	emitter.type = EMITTER_TRAIL;
 	emitter.is_dead = false;
 
 	return emitter;
@@ -1245,8 +1276,16 @@ static void spawn_explode_particle(Particle_Emitter *emitter) {
 	p->elapsed = 0;
 	p->lifetime = emitter->min_lifetime + GetRandomValue(0, 100) / 100.0f * (emitter->max_lifetime - emitter->min_lifetime);
 
+	if (emitter->min_size == 0) {
+		p->size = emitter->max_size;
+	} else {
+		p->size = (float)(GetRandomValue(emitter->min_size, emitter->max_size)); 
+	}
 	p->is_active = true;
 }
+
+const float  player_trail_vel_y = 60.0f;
+const float invader_trail_vel_y = -80.0f;
 
 static void spawn_trail_particle(Particle_Emitter *emitter) {
 	assert(emitter);
@@ -1262,17 +1301,28 @@ static void spawn_trail_particle(Particle_Emitter *emitter) {
 
 	float sideways = GetRandomValue(-30, 30);
 	p->pos = emitter->pos;
-	p->vel = {sideways, 60.0f};
+	p->vel = {sideways, 0};
+
+	if (emitter->type == EMITTER_PLAYER_MISSILE_TRAIL) {
+		p->vel.y = player_trail_vel_y;
+	} else if (emitter->type == EMITTER_INVADER_MISSILE_TRAIL) {
+		p->vel.y = invader_trail_vel_y;
+	}
 	p->color = emitter->color_start;
 	p->elapsed = 0.0f;
 	p->lifetime = emitter->min_lifetime + GetRandomValue(0, 100) / 100.0f * (emitter->max_lifetime - emitter->min_lifetime);
 
+	p->size = (float)GetRandomValue(emitter->min_size, emitter->max_size);
+
 	p->is_active = true;
 }
 
-static void update_emitters() {
+static void update_each_emitters_particles() {
 	For (emitters) {
-		if (it->type == EMITTER_EXPLODE && !it->is_dead) {
+		if (it->is_dead) continue;
+
+		switch (it->type) {
+		case EMITTER_EXPLODE: {
 			bool any_alive = false;
 			for (s32 i = 0; i < MAX_PARTICLES_PER_EMITTER; ++i) {
 				Particle *p = &it->particles[i];
@@ -1290,10 +1340,12 @@ static void update_emitters() {
 					any_alive = true;
 				}
 			}
-
 			if (!any_alive) it->is_dead = true;
+		} break;
+
 			
-		} else if (it->type == EMITTER_TRAIL && !it->is_dead) {
+		case EMITTER_INVADER_MISSILE_TRAIL:
+		case EMITTER_PLAYER_MISSILE_TRAIL: 
 			spawn_trail_particle(it);
 			for (s32 i = 0; i < MAX_PARTICLES_PER_EMITTER; ++i) {
 				Particle *p = &it->particles[i];
@@ -1308,33 +1360,26 @@ static void update_emitters() {
 				if (p->elapsed >= p->lifetime) p->is_active = false;
 				// The emitter will die when the missile is dead.
 			}
+			break;
 		}
 	}
 }
 
-const float explode_particle_radius = 4.0f;
-const float   trail_particle_radius = 2.0f;
 
 static void draw_emitters() {
 	For (emitters) {
 		if (it->is_dead) continue;
 
 		switch (it->type) {
-		case EMITTER_EXPLODE: {
+		case EMITTER_EXPLODE:
+		case EMITTER_PLAYER_MISSILE_TRAIL:
+		case EMITTER_INVADER_MISSILE_TRAIL:
 			for (s32 i = 0; i < MAX_PARTICLES_PER_EMITTER; ++i) {
 				Particle *p = &it->particles[i];
 				if (!p->is_active) continue;
-				DrawCircleV(p->pos, explode_particle_radius, p->color);
+				DrawCircleV(p->pos, p->size, p->color);
 			}
-		} break;
-
-		case EMITTER_TRAIL: {
-			for (s32 i = 0; i < MAX_PARTICLES_PER_EMITTER; ++i) {
-				Particle *p = &it->particles[i];
-				if (!p->is_active) continue;
-				DrawCircleV(p->pos, trail_particle_radius, p->color);
-			}
-		} break;
+			break;
 		}
 
 	}
